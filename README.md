@@ -7,6 +7,7 @@ A personal collection of [Agent Skills](https://agentskills.io) — portable `SK
 ## Included skills
 
 - [`gold-price`](skills/gold-price/SKILL.md) — Ping An digital/physical gold prices and range history, plus ICBC physical gold prices.
+- [`exchange-rate`](skills/exchange-rate/SKILL.md) — Bank foreign-exchange purchase/settlement quotes and range history, starting with Ping An's 10 currencies.
 
 ## Structure
 
