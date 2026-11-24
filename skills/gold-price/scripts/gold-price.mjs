@@ -9,6 +9,13 @@ import {
   getPhysical as getPinganPhysical,
 } from './banks/pingan.mjs';
 import { bank as icbc, getPhysical as getIcbcPhysical } from './banks/icbc.mjs';
+import {
+  ALL_RANGES as CMB_ALL_RANGES,
+  RANGES as CMB_RANGES,
+  bank as cmb,
+  getDigital as getCmbDigital,
+  getPhysical as getCmbPhysical,
+} from './banks/cmb.mjs';
 import { serializeError } from './lib/errors.mjs';
 import { formatChinaMinute, formatChinaTime } from './lib/time.mjs';
 import { round } from './lib/num.mjs';
@@ -25,6 +32,13 @@ const BANKS = new Map([
     ...icbc,
     getPhysical: getIcbcPhysical,
   }],
+  [cmb.id, {
+    ...cmb,
+    ranges: CMB_RANGES,
+    allRanges: CMB_ALL_RANGES,
+    getDigital: getCmbDigital,
+    getPhysical: getCmbPhysical,
+  }],
 ]);
 
 const COMMANDS = new Set(['current', 'history', 'physical', 'all']);
@@ -37,6 +51,7 @@ const USAGE = `用法:
 银行:
   pingan                平安银行（数字金 + 实物金）
   icbc                  工商银行（实物金）
+  cmb                   招商银行（数字金 + 实物金）
 
 命令:
   current               可用的最新价 + 实物黄金各 SKU 报价（默认）
@@ -46,7 +61,8 @@ const USAGE = `用法:
 
 选项:
   --range <列表>        history/all 使用的区间，仅数字金银行；逗号分隔
-                        realtime,1m,3m,6m,1y,all（默认 all）
+                        平安: realtime,1m,3m,6m,1y,all
+                        招商: today,1m,3m,1y,all（默认 all）
   --json                输出 JSON
   -h, --help            显示帮助
 
@@ -54,6 +70,7 @@ const USAGE = `用法:
   node scripts/gold-price.mjs pingan current --json
   node scripts/gold-price.mjs pingan history --range 1m,3m --json
   node scripts/gold-price.mjs icbc physical --json
+  node scripts/gold-price.mjs cmb current --json
   node scripts/gold-price.mjs pingan all --json
 `;
 
@@ -119,6 +136,7 @@ async function loadDigital(bank, options) {
       unit: 'CNY/g',
       current: null,
       trends: {},
+      changes: {},
       errors: [serializeError(error, 'digital')],
     };
   }
@@ -175,7 +193,9 @@ async function loadResult(bank, command, ranges) {
 function markStatus(result) {
   const hasDigital = result.digital?.current?.price != null
     || Object.values(result.digital?.trends ?? {})
-      .some((trend) => (trend.points?.length ?? 0) > 0);
+      .some((trend) => (trend.points?.length ?? 0) > 0)
+    || Object.values(result.digital?.changes ?? {})
+      .some((change) => change?.changePercent != null);
   const hasPhysical = (result.physical?.quotes?.length ?? 0) > 0;
   const hasErrors = Boolean(result.digital?.errors?.length || result.physical?.errors?.length);
   const hasWarnings = Boolean(result.physical?.warnings?.length);
@@ -208,12 +228,22 @@ function printHuman(result) {
   }
 
   if (result.digital) {
-    lines.push('', `数字黄金 · ${result.digital.productName} (${result.digital.productCode})`);
+    const codeSuffix = result.digital.productCode ? ` (${result.digital.productCode})` : '';
+    lines.push('', `数字黄金 · ${result.digital.productName}${codeSuffix}`);
 
     if (result.digital.current) {
+      const publishTime = formatChinaTime(result.digital.current.publishTime);
+      const timeSuffix = publishTime === '--' ? '' : `  (${publishTime})`;
       lines.push(
-        `  最新价: ${formatPrice(result.digital.current.price)} 元/克  (${formatChinaTime(result.digital.current.publishTime)})`,
+        `  最新价: ${formatPrice(result.digital.current.price)} 元/克${timeSuffix}`,
       );
+    }
+
+    for (const change of Object.values(result.digital.changes ?? {})) {
+      const percent = change.changePercent == null
+        ? '--'
+        : `${change.changePercent > 0 ? '+' : ''}${change.changePercent.toFixed(2)}%`;
+      lines.push(`  ${change.label}涨跌幅: ${percent}`);
     }
 
     for (const trend of Object.values(result.digital.trends ?? {})) {
@@ -248,15 +278,13 @@ function printHuman(result) {
         ? ''
         : `  vs 数字金 ${quote.spreadVsDigital > 0 ? '+' : ''}${quote.spreadVsDigital.toFixed(2)} 元/克`;
       const soldOut = quote.tradable === false && quote.remainingQuota === 0;
-      const tradingState = soldOut
-        ? '  [售罄]'
-        : quote.tradable === false
-          ? '  [停售]'
-          : quote.tradable === null
-            ? saleWindow
-              ? `  [销售 ${saleWindow}]`
-              : '  [交易状态未知]'
-            : '';
+      const quoteWindow = formatSaleWindow(quote.saleWindow) ?? saleWindow;
+      let tradingState;
+      if (soldOut) tradingState = '  [售罄]';
+      else if (quote.tradable === false) tradingState = '  [停售]';
+      else if (quoteWindow) tradingState = `  [销售 ${quoteWindow}]`;
+      else if (quote.tradable === null) tradingState = '  [交易状态未知]';
+      else tradingState = '';
       lines.push(
         `  ${quote.sku.padEnd(5)} ${formatPrice(quote.totalPrice).padStart(12)} 元/条  ${formatPrice(quote.pricePerGram)} 元/克${spread}${tradingState}`,
       );
